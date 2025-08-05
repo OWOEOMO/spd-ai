@@ -1,0 +1,3 @@
+[submodule "game/shattered-pixel-dungeon"]
+	path = game/shattered-pixel-dungeon
+	url = https://github.com/00-Evan/shattered-pixel-dungeon.git
