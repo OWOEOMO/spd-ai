@@ -1,0 +1,21 @@
+# Ignore build and generated files
+build/
+*.mp4
+*.png
+*.avi
+*.mkv
+*.flv
+node_modules/
+checkpoints/
+data/raw/
+data/frames/
+data/actions/
+data/pretrain/
+data/bc/
+!checkpoints/.gitkeep
+!data/.gitkeep
+__pycache__/
+*.pyc
+.DS_Store
+.env
+venv/
