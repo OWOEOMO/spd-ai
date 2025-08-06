@@ -4,7 +4,17 @@ plugins {
 }
 
 application {
-    mainClass = 'com.shatteredpixel.shatteredpixeldungeon.desktop.DesktopLauncher'
+    String versionStr = DesktopLauncher.class.getPackage().getImplementationVersion();
+    // 若版本為 null，改用 0.0.0.0，避免 NumberFormatException
+    if (versionStr == null) {
+        versionStr = "0.0.0.0";
+    }
+    int build = 0;
+    try {
+        build = Integer.parseInt(versionStr.split("\\.")[3]);
+    } catch (Exception ignored) {
+        // 版本字串格式不符就設 0
+    }
 }
 
 [compileJava, compileTestJava]*.options*.encoding = 'UTF-8'

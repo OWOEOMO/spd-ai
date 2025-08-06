@@ -154,7 +154,6 @@ class SPDEnv(gym.Env):
             self._frames.append(first_frame)
         return np.stack(self._frames, axis=0), {}
 
-
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         """Send a mouse click action, wait, capture frames, and return observation and reward."""
         # Compute tile coordinates from action index
