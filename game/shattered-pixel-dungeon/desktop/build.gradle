@@ -1,19 +1,20 @@
 plugins {
     id 'org.beryx.runtime' version '1.12.7'
     id 'application'
+    id 'java'
 }
 
 application {
-    String versionStr = DesktopLauncher.class.getPackage().getImplementationVersion();
-    // 若版本為 null，改用 0.0.0.0，避免 NumberFormatException
-    if (versionStr == null) {
-        versionStr = "0.0.0.0";
-    }
-    int build = 0;
-    try {
-        build = Integer.parseInt(versionStr.split("\\.")[3]);
-    } catch (Exception ignored) {
-        // 版本字串格式不符就設 0
+    // 僅設定 mainClass；版本相關邏輯移出
+    mainClass = project.provider { appMainClass }   // 保持惰性
+}
+
+tasks.register('computeBuildMeta') {
+    // 在執行期計算版本與 build number
+    doLast {
+        def ver = (project.version ?: '0.0.0.0').toString()
+        def build = (ver.split('\\.').size() > 3) ? ver.split('\\.')[3] as int : 0
+        project.ext.set('appBuild', build)
     }
 }
 
