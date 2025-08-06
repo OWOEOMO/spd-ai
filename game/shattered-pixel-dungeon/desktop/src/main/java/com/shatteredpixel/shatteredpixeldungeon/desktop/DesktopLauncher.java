@@ -43,6 +43,12 @@ import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.util.Locale;
 
+import com.badlogic.gdx.InputProcessor;
+import com.badlogic.gdx.Gdx;
+import com.badlogic.gdx.utils.JsonReader;
+import com.badlogic.gdx.utils.JsonValue;
+
+
 public class DesktopLauncher {
 
 	public static void main (String[] args) {
@@ -133,6 +139,34 @@ public class DesktopLauncher {
 		Lwjgl3ApplicationConfiguration config = new Lwjgl3ApplicationConfiguration();
 		
 		config.setTitle( title );
+		
+		// 關閉 vSync，讓渲染迴圈不受螢幕更新率限制。
+		config.useVsync(false);
+
+		// foregroundFPS = 0 取消 LibGDX 的前景限幀。
+		config.setForegroundFPS(0);
+
+		// idleFPS = 0 取消背景限幀（視窗不在前景時）。
+		config.setIdleFPS(0);
+
+		// 檢查是否傳入 --ai-mode 旗標，日後可改成 headless 啟動。
+		boolean aiMode = false;
+		for (String arg : args) {
+			if ("--ai-mode".equals(arg)) {
+				aiMode = true;
+				break;
+			}
+		}
+
+ 		// ------------------------------------------------------------
+ 		// AI mode：啟動無邊框小視窗（或可改成完全隱藏）以最高速度執行
+ 		if (aiMode) {
+ 			// 視窗縮到 640×360，或你需要的解析度
+ 			config.setWindowedMode(640, 360);
+ 			config.setDecorated(false);   // 去邊框
+ 			config.setResizable(false);
+ 			// 若想完全隱藏：等 Lwjgl3Application 建立後再 window.setVisible(false)
+ 		}
 
 		//if I were implementing this from scratch I would use the full implementation title for saves
 		// (e.g. /.shatteredpixel/shatteredpixeldungeon), but we have too much existing save
@@ -185,6 +219,37 @@ public class DesktopLauncher {
 		
 		config.setWindowIcon("icons/icon_16.png", "icons/icon_32.png", "icons/icon_48.png",
 				"icons/icon_64.png", "icons/icon_128.png", "icons/icon_256.png");
+
+ 		/* ============================================================
+ 		 *  Thread：讀取 STDIN，每行一個 JSON，觸發滑鼠點擊
+ 		 *  例：{"x":320,"y":240,"button":0}
+ 		 * ========================================================== */
+ 		if (aiMode) {
+ 			new Thread(() -> {
+ 				com.badlogic.gdx.utils.JsonReader reader = new com.badlogic.gdx.utils.JsonReader();
+ 				try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(System.in))) {
+ 					String line;
+ 					while ((line = br.readLine()) != null) {
+ 						final com.badlogic.gdx.utils.JsonValue j = reader.parse(line);
+ 						final int mx = j.getInt("x");
+ 						// SDL座標左上→LibGDX左下，需反轉 y
+ 						final int my = Gdx.graphics.getHeight() - j.getInt("y");
+ 						final int btn = j.getInt("button", 0); // 0=左鍵
+ 
+ 						// 必須在渲染執行緒呼叫 input processor
+ 						com.badlogic.gdx.Gdx.app.postRunnable(() -> {
+ 							com.badlogic.gdx.InputProcessor ip = com.badlogic.gdx.Gdx.input.getInputProcessor();
+ 							if (ip != null) {
+ 								ip.touchDown(mx, my, 0, btn);
+ 								ip.touchUp(mx, my, 0, btn);
+ 							}
+ 						});
+ 					}
+ 				} catch (Exception e) {
+ 					e.printStackTrace();
+ 				}
+ 			}, "AI-stdin").start();
+ 		}
 
 		new Lwjgl3Application(new ShatteredPixelDungeon(new DesktopPlatformSupport()), config);
 	}

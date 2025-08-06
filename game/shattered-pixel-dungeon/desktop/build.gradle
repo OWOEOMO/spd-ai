@@ -1,5 +1,10 @@
 plugins {
     id 'org.beryx.runtime' version '1.12.7'
+    id 'application'
+}
+
+application {
+    mainClass = 'com.shatteredpixel.shatteredpixeldungeon.desktop.DesktopLauncher'
 }
 
 [compileJava, compileTestJava]*.options*.encoding = 'UTF-8'
