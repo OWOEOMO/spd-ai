@@ -41,13 +41,17 @@ import org.lwjgl.util.tinyfd.TinyFileDialogs;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.util.Arrays;
 import java.util.Locale;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 
 import com.badlogic.gdx.InputProcessor;
 import com.badlogic.gdx.Gdx;
 import com.badlogic.gdx.utils.JsonReader;
 import com.badlogic.gdx.utils.JsonValue;
-
+import com.badlogic.gdx.utils.Timer;
 
 public class DesktopLauncher {
 
@@ -150,13 +154,7 @@ public class DesktopLauncher {
 		config.setIdleFPS(0);
 
 		// 檢查是否傳入 --ai-mode 旗標，日後可改成 headless 啟動。
-		boolean aiMode = false;
-		for (String arg : args) {
-			if ("--ai-mode".equals(arg)) {
-				aiMode = true;
-				break;
-			}
-		}
+        boolean aiMode = Arrays.asList(args).contains("--ai-mode");
 		System.out.println("[Launcher] aiMode = " + aiMode);
 
  		// ------------------------------------------------------------
@@ -245,6 +243,9 @@ public class DesktopLauncher {
 						}
 						if (!j.isObject()) continue;
 
+
+
+
 						if (j.has("cmd")) {
 							String cmd = j.getString("cmd", "");
 							if ("reset".equals(cmd)) {
@@ -284,8 +285,7 @@ public class DesktopLauncher {
 
 										// 5) 切換場景進入地牢第一層
 										Class<?> gameCls = Class.forName("com.watabou.noosa.Game");
-										gameCls.getMethod("switchScene", Class.class)
-											.invoke(null, interlevelSceneCls);
+										gameCls.getMethod("switchScene", Class.class).invoke(null, interlevelSceneCls);
 
 										System.out.println("[AI] reset -> started new game (" + warrior + ")");
 									} catch (Exception e) {
@@ -318,21 +318,48 @@ public class DesktopLauncher {
  			}, "AI-stdin").start();
  		}
 
-		new Lwjgl3Application(new ShatteredPixelDungeon(new DesktopPlatformSupport()), config);
-		
-		System.out.println("[Launcher] aiMode = " + aiMode);
-		if (aiMode) {
-			Gdx.app.postRunnable(() -> {
-				try {
-					Class.forName("com.shatteredpixel.shatteredpixeldungeon.Dungeon")
-						.getMethod("start").invoke(null);
-					System.out.println("[Launcher] Dungeon.start() called");
-				} catch (Exception e) {
-					System.err.println("[Launcher] Dungeon.start() failed:");
-					e.printStackTrace();
-				}
-			});
-		}
+		ShatteredPixelDungeon game = new ShatteredPixelDungeon(new DesktopPlatformSupport()){
+			@Override public void create() {
+				super.create();
+				if (aiMode) watchScene();          // ← 用輪詢的方式監看場景
+			}
+		};
+
+		new Lwjgl3Application(game, config);   // 只有這裡保留在 main()
 
 	}
+
+	private static void watchScene() {
+		Timer.schedule(new Timer.Task() {
+			@Override public void run () {
+				try {
+					Class<?> gameCls = Class.forName("com.watabou.noosa.Game");
+					Object   scn     = gameCls.getMethod("scene").invoke(null);
+					if (scn == null) return;                        // 尚未初始化
+
+					String simple = scn.getClass().getSimpleName();
+					// 只有是 GameScene 時才需要套用
+					if ("GameScene".equals(simple)) applyFast(gameCls, scn);
+				} catch (Exception e){ e.printStackTrace(); }
+			}
+		}, 0f, 0.2f);   // 每 0.2 秒檢查一次
+	}
+
+	private static void applyFast(Class<?> gameCls, Object gs) throws Exception {
+		// 若已經是快轉狀態就略過（避免重複設）
+		float ts = gameCls.getField("timeScale").getFloat(null);
+		if (ts >= 9.9f) return;
+
+		/* ① 倍速 */
+		gameCls.getField("timeScale").setFloat(null, 10f);
+
+		/* ② 關閉節流 */
+		java.lang.reflect.Field nd = gs.getClass().getDeclaredField("notifyDelay");
+		nd.setAccessible(true);
+		nd.setFloat(gs, 0f);
+
+		System.out.println("[FastMode] 重新套用：timeScale=10, notifyDelay=0");
+	}
+
 }
+
