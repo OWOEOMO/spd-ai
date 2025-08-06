@@ -157,6 +157,7 @@ public class DesktopLauncher {
 				break;
 			}
 		}
+		System.out.println("[Launcher] aiMode = " + aiMode);
 
  		// ------------------------------------------------------------
  		// AI mode：啟動無邊框小視窗（或可改成完全隱藏）以最高速度執行
@@ -230,7 +231,72 @@ public class DesktopLauncher {
  				try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(System.in))) {
  					String line;
  					while ((line = br.readLine()) != null) {
- 						final com.badlogic.gdx.utils.JsonValue j = reader.parse(line);
+
+						line = line.trim();
+						if (line.isEmpty()) continue;          // 空行直接跳過
+
+						System.out.println("[AI] raw input: " + line);  // ← 印收到的字串
+						JsonValue j;
+						try {
+							j = reader.parse(line);
+						} catch (Exception ex) {
+							System.err.println("[AI] Bad JSON, skip");
+							continue;
+						}
+						if (!j.isObject()) continue;
+
+						if (j.has("cmd")) {
+							String cmd = j.getString("cmd", "");
+							if ("reset".equals(cmd)) {
+								// 在 LibGDX 渲染執行緒執行遊戲邏輯
+								Gdx.app.postRunnable(() -> {
+									try {
+										// 1) 選擇職業：這裡預設 WARRIOR，可改成 MAGE、ROGUE、HUNTRESS
+										Class<?> heroEnumCls = Class.forName(
+											"com.shatteredpixel.shatteredpixeldungeon.actors.hero.HeroClass");
+										Object warrior = Enum.valueOf(
+											(Class<Enum>) heroEnumCls.asSubclass(Enum.class), "WARRIOR");
+										Class<?> gipCls = Class.forName(
+											"com.shatteredpixel.shatteredpixeldungeon.GamesInProgress");
+										gipCls.getField("selectedClass").set(null, warrior);
+
+										// 2) 清除當前英雄及 Daily 標誌，並重設隨機種子
+										Class<?> dungeonCls = Class.forName(
+											"com.shatteredpixel.shatteredpixeldungeon.Dungeon");
+										dungeonCls.getField("hero").set(null, null);
+										dungeonCls.getField("daily").setBoolean(null, false);
+										dungeonCls.getField("dailyReplay").setBoolean(null, false);
+										dungeonCls.getMethod("initSeed").invoke(null);
+
+										// 3) 清除任何操作指示
+										Class<?> actionIndicatorCls = Class.forName(
+											"com.shatteredpixel.shatteredpixeldungeon.ui.ActionIndicator");
+										actionIndicatorCls.getMethod("clearAction").invoke(null);
+
+										// 4) 將 InterlevelScene.mode 設為 DESCEND
+										Class<?> interlevelSceneCls = Class.forName(
+											"com.shatteredpixel.shatteredpixeldungeon.scenes.InterlevelScene");
+										Class<?> modeEnum = Class.forName(
+											"com.shatteredpixel.shatteredpixeldungeon.scenes.InterlevelScene$Mode");
+										Object descend = Enum.valueOf(
+											(Class<Enum>) modeEnum.asSubclass(Enum.class), "DESCEND");
+										interlevelSceneCls.getField("mode").set(null, descend);
+
+										// 5) 切換場景進入地牢第一層
+										Class<?> gameCls = Class.forName("com.watabou.noosa.Game");
+										gameCls.getMethod("switchScene", Class.class)
+											.invoke(null, interlevelSceneCls);
+
+										System.out.println("[AI] reset -> started new game (" + warrior + ")");
+									} catch (Exception e) {
+										e.printStackTrace();
+									}
+								});
+								continue; // 已處理 reset，跳過後面的滑鼠指令
+							}
+						}
+
+
  						final int mx = j.getInt("x");
  						// SDL座標左上→LibGDX左下，需反轉 y
  						final int my = Gdx.graphics.getHeight() - j.getInt("y");
@@ -238,6 +304,7 @@ public class DesktopLauncher {
  
  						// 必須在渲染執行緒呼叫 input processor
  						com.badlogic.gdx.Gdx.app.postRunnable(() -> {
+							System.out.println("[AI] click at (" + mx + ", " + my + "), btn=" + btn);
  							com.badlogic.gdx.InputProcessor ip = com.badlogic.gdx.Gdx.input.getInputProcessor();
  							if (ip != null) {
  								ip.touchDown(mx, my, 0, btn);
@@ -252,5 +319,20 @@ public class DesktopLauncher {
  		}
 
 		new Lwjgl3Application(new ShatteredPixelDungeon(new DesktopPlatformSupport()), config);
+		
+		System.out.println("[Launcher] aiMode = " + aiMode);
+		if (aiMode) {
+			Gdx.app.postRunnable(() -> {
+				try {
+					Class.forName("com.shatteredpixel.shatteredpixeldungeon.Dungeon")
+						.getMethod("start").invoke(null);
+					System.out.println("[Launcher] Dungeon.start() called");
+				} catch (Exception e) {
+					System.err.println("[Launcher] Dungeon.start() failed:");
+					e.printStackTrace();
+				}
+			});
+		}
+
 	}
 }
