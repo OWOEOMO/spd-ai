@@ -1,55 +1,47 @@
-"""Custom wrappers for SPDEnv to provide intrinsic and extrinsic rewards.
-
-This module defines two example wrappers:
-
-- `RNDReward` – implements a basic random network distillation (RND) intrinsic
-  reward signal.  You will need to provide your own implementation or use an
-  existing library.
-- `ExtrinsicWrapper` – adds external rewards based on the game’s score
-  increment or other task‑specific signals.
-
-These wrappers should be composed around `SPDEnv` when training the agent.
+"""
+簡易 wrappers：
+* RNDReward: 內部隨機網路探索 (very light)  
+* ExtrinsicWrapper: 將 env 原有 reward 乘上係數
 """
 
 from __future__ import annotations
-from typing import Any, Dict, Tuple
-
+import numpy as np
 import gymnasium as gym
+from sb3_contrib.common.reward_norm import RewardNormalizer  # 內建 wrapper
+from sb3_contrib.common.vec_env import VecNormalize         # ← 只是示例
 
+
+# ---- RND --------------------------------------------------------------------
+class _SimpleRNDModel:
+    """極簡版 RND：線性層 + ReLU，不做訓練，只算 L2 損失。"""
+    def __init__(self, obs_shape):
+        H, W, C = obs_shape
+        feat_dim = 128
+        rng = np.random.default_rng(123)
+        self.W = rng.standard_normal((H*W*C, feat_dim)).astype(np.float32)
+
+    def __call__(self, obs: np.ndarray):
+        flat = obs.reshape(obs.shape[0], -1) / 255.0
+        return np.maximum(flat @ self.W, 0.0)
 
 class RNDReward(gym.Wrapper):
-    """Placeholder wrapper to add intrinsic curiosity rewards using RND."""
-    def __init__(self, env: gym.Env, int_coef: float = 1.0) -> None:
+    def __init__(self, env, int_coef: float = 1.0):
         super().__init__(env)
+        # 用 sb3-contrib 內建 RND 探索器
+        from sb3_contrib.common.exploration.rnd import RNDModel
+        self.rnd = RNDModel(env.observation_space, env.action_space)
         self.int_coef = int_coef
-        # TODO: initialise your RND networks here
 
-    def step(self, action: Any) -> Tuple[Any, float, bool, bool, Dict[str, Any]]:
-        obs, reward, terminated, truncated, info = self.env.step(action)
-        # TODO: compute intrinsic reward based on observation
-        intrinsic_reward = 0.0
-        reward = reward + self.int_coef * intrinsic_reward
-        return obs, reward, terminated, truncated, info
-
-
+    def step(self, action):
+        obs, ext_r, done, trunc, info = self.env.step(action)
+        int_r = self.rnd.reward(obs)
+        return obs, ext_r + self.int_coef * int_r, done, trunc, info
+    
+# ---- Extrinsic --------------------------------------------------------------
 class ExtrinsicWrapper(gym.Wrapper):
-    """Placeholder wrapper to add external rewards based on game score."""
-    def __init__(self, env: gym.Env, ext_coef: float = 1.0) -> None:
-        super().__init__(env)
-        self.ext_coef = ext_coef
-        self._last_score: float = 0.0
+    def __init__(self, env, ext_coef=1.0):
+        super().__init__(env); self.ext_coef = float(ext_coef)
 
-    def reset(self, **kwargs: Any) -> Tuple[Any, Dict[str, Any]]:
-        obs, info = self.env.reset(**kwargs)
-        # Reset internal score tracking
-        self._last_score = info.get("score", 0.0)
-        return obs, info
-
-    def step(self, action: Any) -> Tuple[Any, float, bool, bool, Dict[str, Any]]:
-        obs, reward, terminated, truncated, info = self.env.step(action)
-        # Extract the current score from info and compute the difference
-        current_score = info.get("score", self._last_score)
-        delta = current_score - self._last_score
-        self._last_score = current_score
-        reward = reward + self.ext_coef * delta
-        return obs, reward, terminated, truncated, info
+    def step(self, action):
+        obs, r, term, trunc, info = self.env.step(action)
+        return obs, self.ext_coef * r, term, trunc, info

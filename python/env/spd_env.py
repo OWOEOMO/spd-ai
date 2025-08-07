@@ -78,7 +78,7 @@ class SPDEnv(gym.Env):
         self.action_space = spaces.Discrete(grid_size[0] * grid_size[1])
         # Observation is a stack of grayscale frames.
         self.observation_space = spaces.Box(
-            low=0, high=255, shape=(frame_stack, grayscale_size[0], grayscale_size[1]), dtype=np.uint8
+            low=0, high=255, shape=(grayscale_size[0], grayscale_size[1], frame_stack), dtype=np.uint8
         )
 
         # Frame buffer for stacking
@@ -112,7 +112,7 @@ class SPDEnv(gym.Env):
             stderr=subprocess.STDOUT,
             text=True,                       # 讓 .stdin / .stdout 都收發字串
             bufsize=1,                       # line-buffered
-            creationflags=subprocess.CREATE_NO_WINDOW  # ← 無視窗但保留 stdio
+            #creationflags=subprocess.CREATE_NO_WINDOW  # ← 無視窗但保留 stdio
         )
 
         # 等視窗穩定＋檢查是否已經 crash
@@ -123,25 +123,10 @@ class SPDEnv(gym.Env):
                 f"SPD jar terminated early with exit code {self.proc.returncode}\n{output}"
             )
 
-    def _send_click(self, row: int, col: int) -> None:
-        """Send a click at the specified tile row and column via JSON over stdin."""
-        left, top, width, height = self.capture_region
-        tile_w = width / self.grid_size[1]
-        tile_h = height / self.grid_size[0]
-        rel_x = int((col + 0.5)*tile_w)
-        rel_y = int((row + 0.5)*tile_h)
-        cmd_dict = {"x": rel_x, "y": rel_y, "button": 0}
-        if self.proc and self.proc.stdin:
-            self.proc.stdin.write(json.dumps(cmd_dict) + "\n")
-            self.proc.stdin.flush()
-        self._last_click = (row, col)
-        self._highlight_counter = self.highlight_duration
-
-    def _send_reset_command(self) -> None:
-        """Send a reset command to the Java process."""
-        if self.proc and self.proc.stdin:
-            self.proc.stdin.write(json.dumps({"cmd": "reset"}) + "\n")
-            self.proc.stdin.flush()
+    def _send_click(self, row:int, col:int):
+        l, t, w, h = self.capture_region
+        tx, ty = w / self.grid_size[1], h / self.grid_size[0]
+        self._send({"x": int((col+0.5)*tx), "y": int((row+0.5)*ty), "button": 0})
 
     def _ensure_proc(self) -> None:
         """Start the subprocess if it's not already running."""
@@ -172,12 +157,16 @@ class SPDEnv(gym.Env):
 
         return resized
 
+    def _send(self, obj: dict):
+        if self.proc and self.proc.stdin:
+            self.proc.stdin.write(json.dumps(obj) + "\n")
+            self.proc.stdin.flush()
+
     def _query_state(self, timeout=1.0) -> dict:
         if not (self.proc and self.proc.stdin and self.proc.stdout):
             return {}
 
-        self.proc.stdin.write('{"cmd":"get_state"}\n')
-        self.proc.stdin.flush()
+        self._send({"cmd": "get_state"})
 
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -193,42 +182,38 @@ class SPDEnv(gym.Env):
             # 其餘行視為雜訊，忽略
         return {}
 
-
     def reset(self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None) -> Tuple[np.ndarray, Dict[str, Any]]:
         super().reset(seed=seed, options=options)
         self._ensure_proc()
-        self._send_reset_command()
+        self._send({"cmd": "reset"})
         time.sleep(2.0)  # 等待遊戲跳到第一層
         self._frames = []
         self.prev_lvl  = 1
         self.prev_exp  = 0
         self.prev_gold = 0
         self.prev_depth = 1
-        first_frame = self._capture_frame()
+        first_frame = first = self._grab_gray()
         for _ in range(self.frame_stack):
             self._frames.append(first_frame)
-        return np.stack(self._frames, axis=0), {}
+        return self._obs(), {}
 
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         """Send a mouse click action, wait, capture frames, and return observation and reward."""
         # Compute tile coordinates from action index
-        row = action // self.grid_size[1]
-        col = action % self.grid_size[1]
-        self._send_click(row, col)
+        r, c = divmod(action, self.grid_size[1])
+        self._send_click(r, c)
         # print(f"[Click]: ({row}, {col})")
         # Skip a few frames to allow the game to update
         for _ in range(self.frame_skip):
             time.sleep(0.05)
-            frame = self._capture_frame()
-            self._frames.append(frame)
+            self._frames.append(self._grab_gray())
             if len(self._frames) > self.frame_stack:
                 self._frames.pop(0)
-        obs = np.stack(self._frames, axis=0)
 
         # TODO: Implement proper reward and termination detection by parsing game output or using OCR.
         state = self._query_state()
         if not state:
-            return obs, 0.0, False, False, {}
+            return self._obs(), 0.0, False, False, {}
         
         # experience gain
         xp_now  = state["lvl"]*100 + state["exp"]
@@ -256,7 +241,7 @@ class SPDEnv(gym.Env):
 
         info: Dict[str, Any] = {}
 
-        return obs, reward, terminated, truncated, info
+        return self._obs(), reward, terminated, truncated, info
 
     def render(self, mode: str = "human") -> None:
         if mode != "human":
@@ -285,3 +270,13 @@ class SPDEnv(gym.Env):
             self.proc = None
         self.sct.close()
         cv2.destroyAllWindows()         # ← 確保視窗關閉
+
+    def _grab_gray(self):
+        l, t, w, h = self.capture_region
+        img = np.asarray(self.sct.grab({"left": l, "top": t, "width": w, "height": h}))[:,:,:3]
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        return cv2.resize(gray, self.grayscale_size, interpolation=cv2.INTER_AREA)
+
+    def _obs(self):
+        # 堆疊在最後一維 → (H, W, C)
+        return np.stack(self._frames, axis=-1).astype(np.uint8)
