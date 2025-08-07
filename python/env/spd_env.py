@@ -69,6 +69,10 @@ class SPDEnv(gym.Env):
         self.highlight_duration = highlight_duration
         self._highlight_counter: int = 0      # 還要畫幾張影格
         self._last_click: Optional[Tuple[int, int]] = None  # 最近一次點擊的 (row, col)
+        self.prev_lvl  = 1
+        self.prev_exp  = 0
+        self.prev_gold = 0
+        self.prev_depth = 1
 
         # Discrete actions correspond to clicking on a tile in the grid.
         self.action_space = spaces.Discrete(grid_size[0] * grid_size[1])
@@ -168,12 +172,38 @@ class SPDEnv(gym.Env):
 
         return resized
 
+    def _query_state(self, timeout=1.0) -> dict:
+        if not (self.proc and self.proc.stdin and self.proc.stdout):
+            return {}
+
+        self.proc.stdin.write('{"cmd":"get_state"}\n')
+        self.proc.stdin.flush()
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            line = self.proc.stdout.readline()
+            if not line:
+                break                      # 子行程掛了？
+            if line.startswith("##STATE##"):
+                try:
+                    return json.loads(line[len("##STATE##"):])
+                except json.JSONDecodeError as e:
+                    print("⚠️  JSON parse error:", e, line.strip())
+                    return {}
+            # 其餘行視為雜訊，忽略
+        return {}
+
+
     def reset(self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None) -> Tuple[np.ndarray, Dict[str, Any]]:
         super().reset(seed=seed, options=options)
         self._ensure_proc()
         self._send_reset_command()
         time.sleep(2.0)  # 等待遊戲跳到第一層
         self._frames = []
+        self.prev_lvl  = 1
+        self.prev_exp  = 0
+        self.prev_gold = 0
+        self.prev_depth = 1
         first_frame = self._capture_frame()
         for _ in range(self.frame_stack):
             self._frames.append(first_frame)
@@ -185,7 +215,7 @@ class SPDEnv(gym.Env):
         row = action // self.grid_size[1]
         col = action % self.grid_size[1]
         self._send_click(row, col)
-        print(f"[Click]: ({row}, {col})")
+        # print(f"[Click]: ({row}, {col})")
         # Skip a few frames to allow the game to update
         for _ in range(self.frame_skip):
             time.sleep(0.05)
@@ -194,11 +224,38 @@ class SPDEnv(gym.Env):
             if len(self._frames) > self.frame_stack:
                 self._frames.pop(0)
         obs = np.stack(self._frames, axis=0)
+
         # TODO: Implement proper reward and termination detection by parsing game output or using OCR.
-        reward = 0.0
-        terminated = False
+        state = self._query_state()
+        if not state:
+            return obs, 0.0, False, False, {}
+        
+        # experience gain
+        xp_now  = state["lvl"]*100 + state["exp"]
+        xp_prev = self.prev_lvl*100 + self.prev_exp
+        reward  = xp_now - xp_prev
+
+        # gold & depth bonus
+        reward += 0.1*(state["gold"] - self.prev_gold)
+        if state["depth"] > self.prev_depth:
+            reward += 50
+
+        # death penalty
+        alive = state.get("alive", True)
+        if not alive:
+            reward -= 100
+
+        terminated = not alive
         truncated = False
+
+        # update baselines
+        self.prev_lvl   = state["lvl"]
+        self.prev_exp   = state["exp"]
+        self.prev_gold  = state["gold"]
+        self.prev_depth = state["depth"]
+
         info: Dict[str, Any] = {}
+
         return obs, reward, terminated, truncated, info
 
     def render(self, mode: str = "human") -> None:

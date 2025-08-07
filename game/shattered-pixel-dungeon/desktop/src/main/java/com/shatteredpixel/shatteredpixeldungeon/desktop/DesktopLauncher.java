@@ -54,7 +54,11 @@ import com.badlogic.gdx.utils.JsonValue;
 import com.badlogic.gdx.utils.Timer;
 
 public class DesktopLauncher {
-
+	private static final com.badlogic.gdx.utils.Json gdxJson = new com.badlogic.gdx.utils.Json();
+	static {                           // ← 建議放在類載入時做一次
+		gdxJson.setOutputType(com.badlogic.gdx.utils.JsonWriter.OutputType.json);
+		gdxJson.setUsePrototypes(false);
+	}
 	public static void main (String[] args) {
 
 		if (!DesktopLaunchValidator.verifyValidJVMState(args)){
@@ -226,7 +230,8 @@ public class DesktopLauncher {
  		if (aiMode) {
  			new Thread(() -> {
  				com.badlogic.gdx.utils.JsonReader reader = new com.badlogic.gdx.utils.JsonReader();
- 				try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(System.in))) {
+				
+				try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(System.in))) {
  					String line;
  					while ((line = br.readLine()) != null) {
 
@@ -248,7 +253,7 @@ public class DesktopLauncher {
 
 						if (j.has("cmd")) {
 							String cmd = j.getString("cmd", "");
-							if ("reset".equals(cmd)) {
+							if ("reset".equals(cmd)) { //{"cmd":"reset"}
 								// 在 LibGDX 渲染執行緒執行遊戲邏輯
 								Gdx.app.postRunnable(() -> {
 									try {
@@ -294,6 +299,12 @@ public class DesktopLauncher {
 								});
 								continue; // 已處理 reset，跳過後面的滑鼠指令
 							}
+							if ("get_state".equals(cmd)) { //{"cmd":"get_state"}
+								StateSnapshot snap = capture();
+								System.out.println("##STATE##" + gdxJson.toJson(snap));
+								continue;
+							}
+
 						}
 
 
@@ -360,6 +371,47 @@ public class DesktopLauncher {
 
 		System.out.println("[FastMode] 重新套用：timeScale=10, notifyDelay=0");
 	}
+
+	// ──★ 2.1 乾淨的靜態資料類 ───────────────────────────
+	public static class StateSnapshot {
+		public int depth, gold;
+		public int hp, ht, exp, lvl;
+		public boolean alive;
+		// public int keys, food, mobs, visibleEnemies;
+	}
+
+	// ──★ 2.2 獨立的靜態方法 ────────────────────────────
+	private static StateSnapshot capture() throws Exception {
+		StateSnapshot s = new StateSnapshot();
+
+		Class<?> dungeon = Class.forName("com.shatteredpixel.shatteredpixeldungeon.Dungeon");
+		Object   hero    = dungeon.getField("hero").get(null);
+		Class<?> heroCls = hero.getClass();
+
+		s.depth = dungeon.getField("depth").getInt(null);
+		s.gold  = dungeon.getField("gold").getInt(null);
+
+		s.hp    = heroCls.getField("HP").getInt(hero);
+		s.ht    = heroCls.getField("HT").getInt(hero);
+
+		try {
+			s.alive = (boolean) heroCls.getMethod("isAlive").invoke(hero);
+		} catch (Exception ex) {
+			s.alive = false;          // 保底
+			System.err.println("[capture] " + ex);
+		}
+
+		s.lvl   = heroCls.getField("lvl").getInt(hero);
+		try {
+			s.exp = heroCls.getField("exp").getInt(hero);
+		} catch (Exception ex) {
+			s.exp = 0;          // 保底
+			System.err.println("[capture] " + ex);
+		}
+
+		return s;
+	}
+
 
 }
 
