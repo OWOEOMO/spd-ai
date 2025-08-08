@@ -17,6 +17,7 @@ from typing import Any, Dict, Tuple, List, Optional
 import subprocess
 import time
 import json
+from pathlib import Path
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
@@ -97,14 +98,16 @@ class SPDEnv(gym.Env):
         if self.proc is not None:
             self.proc.terminate()
             self.proc.wait()
-
+        ROOT = Path(__file__).resolve().parents[2]   # spd-ai 根
+        jar_path = ROOT / "game" / "shattered-pixel-dungeon" / "desktop" / "build" / "libs" / "desktop-3.2.0.jar"
+        
         cmd = [
             "java",
             "--add-opens", "java.base/java.lang=ALL-UNNAMED",  # 👈 一定要帶
-            "-jar", self.jar_path,
+            "-jar", str(jar_path),
             "--ai-mode"
         ]
-
+        
         self.proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,

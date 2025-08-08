@@ -15,7 +15,7 @@ import pytest
 from env.spd_env import SPDEnv
 
 # ──★ 0. 可配置參數 ──────────────────────────────
-JAR_PATH = Path("../game/shattered-pixel-dungeon/desktop/build/libs/desktop-3.2.0.jar").resolve()
+JAR_PATH = Path("E:\GithubClone\spd-ai\game\shattered-pixel-dungeon\desktop\build\libs\desktop-3.2.0.jar").resolve()
 CAPTURE_REGION = (1558, 422, 720, 1220)      # 依你的螢幕位置調整
 N_STEPS = 100
 RENDER_EVERY = 5

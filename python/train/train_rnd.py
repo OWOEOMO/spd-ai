@@ -74,29 +74,35 @@ class RNDReward(VecEnvWrapper):
 
         rew = ext_rew + self.int_coef * int_rew
         return obs, rew, done, info
-
+    
+    def reset(self, **kwargs):
+        return self.venv.reset(**kwargs)
+    
 # ── 2. VecEnv 工廠 ─────────────────────────────────────
-def make_env(int_coef=1.0):
+def make_env():
     def _init():
         env = SPDEnv(jar_path=JAR_PATH, capture_region=CAPTURE_REGION)
-        env = VecTransposeImage(env)                # (H,W,C) → (C,H,W)
-        env = VecFrameStack(env, n_stack=4)         # time-stack
-        env = RNDReward(env, int_coef=int_coef)     # intrinsic
         return env
     return _init
 
 # ── 3. 兩階段訓練 ───────────────────────────────────────
 if __name__ == "__main__":
-    # ① 只用 intrinsic reward 探索
-    vec_env = DummyVecEnv([make_env(int_coef=1.0)])
-    model = PPO("CnnPolicy", vec_env,
-                learning_rate=2.5e-4, n_steps=2048, batch_size=64,
-                n_epochs=4, gamma=0.99, verbose=1)
+    # 第一階段：僅使用 intrinsic reward
+    vec_env = DummyVecEnv([make_env()])
+    vec_env = VecTransposeImage(vec_env)
+    vec_env = VecFrameStack(vec_env, n_stack=4)
+    vec_env = RNDReward(vec_env, int_coef=1.0)
+    model = PPO("CnnPolicy", vec_env, learning_rate=2.5e-4,
+                n_steps=2048, batch_size=64, n_epochs=4,
+                gamma=0.99, verbose=1)
     model.learn(TOTAL_STEPS)
     model.save("spd_ppo_stage1")
 
-    # ② intrinsic 0.5 + extrinsic 1.0（外部獎用 env 內建）
-    vec_env2 = DummyVecEnv([make_env(int_coef=0.5)])
+    # 第二階段：intrinsic 係數 0.5，加上環境內建的外部獎勵
+    vec_env2 = DummyVecEnv([make_env()])
+    vec_env2 = VecTransposeImage(vec_env2)
+    vec_env2 = VecFrameStack(vec_env2, n_stack=4)
+    vec_env2 = RNDReward(vec_env2, int_coef=0.5)
     model.set_env(vec_env2)
     model.learn(500_000)
     model.save("spd_ppo_stage2")

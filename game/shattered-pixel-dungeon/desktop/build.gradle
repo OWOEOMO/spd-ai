@@ -1,21 +1,5 @@
 plugins {
     id 'org.beryx.runtime' version '1.12.7'
-    id 'application'
-    id 'java'
-}
-
-application {
-    // 僅設定 mainClass；版本相關邏輯移出
-    mainClass = project.provider { appMainClass }   // 保持惰性
-}
-
-tasks.register('computeBuildMeta') {
-    // 在執行期計算版本與 build number
-    doLast {
-        def ver = (project.version ?: '0.0.0.0').toString()
-        def build = (ver.split('\\.').size() > 3) ? ver.split('\\.')[3] as int : 0
-        project.ext.set('appBuild', build)
-    }
 }
 
 [compileJava, compileTestJava]*.options*.encoding = 'UTF-8'

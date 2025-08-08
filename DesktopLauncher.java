@@ -248,6 +248,9 @@ public class DesktopLauncher {
 						}
 						if (!j.isObject()) continue;
 
+
+
+
 						if (j.has("cmd")) {
 							String cmd = j.getString("cmd", "");
 							if ("reset".equals(cmd)) { //{"cmd":"reset"}
