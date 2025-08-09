@@ -161,15 +161,36 @@ public class DesktopLauncher {
         boolean aiMode = Arrays.asList(args).contains("--ai-mode");
 		System.out.println("[Launcher] aiMode = " + aiMode);
 
+		// 解析 --pos=x,y & --size=W x H
+		int winX = -1, winY = -1;
+		int winW = 640, winH = 360; // 預設 ai-mode 小窗尺寸
+		for (String arg : args) {
+			if (arg.startsWith("--pos=")) {
+				try {
+					String[] xy = arg.substring(6).split(",");
+					winX = Integer.parseInt(xy[0].trim());
+					winY = Integer.parseInt(xy[1].trim());
+				} catch (Exception ignored) {}
+			} else if (arg.startsWith("--size=")) {
+				try {
+					String[] wh = arg.substring(7).toLowerCase(Locale.ROOT).split("x");
+					winW = Integer.parseInt(wh[0].trim());
+					winH = Integer.parseInt(wh[1].trim());
+				} catch (Exception ignored) {}
+			}
+		}
+
+
  		// ------------------------------------------------------------
  		// AI mode：啟動無邊框小視窗（或可改成完全隱藏）以最高速度執行
- 		if (aiMode) {
- 			// 視窗縮到 640×360，或你需要的解析度
- 			config.setWindowedMode(640, 360);
- 			config.setDecorated(false);   // 去邊框
- 			config.setResizable(false);
- 			// 若想完全隱藏：等 Lwjgl3Application 建立後再 window.setVisible(false)
- 		}
+		if (aiMode) {
+			config.setWindowedMode(winW, winH);
+			config.setDecorated(false);
+			config.setResizable(false);
+			if (winX >= 0 && winY >= 0) {
+				config.setWindowPosition(winX, winY);
+			}
+		}
 
 		//if I were implementing this from scratch I would use the full implementation title for saves
 		// (e.g. /.shatteredpixel/shatteredpixeldungeon), but we have too much existing save
@@ -371,7 +392,7 @@ public class DesktopLauncher {
 
 	// ──★ 2.1 乾淨的靜態資料類 ───────────────────────────
 	public static class StateSnapshot {
-		public int depth, gold;
+		public int depth, gold, explored;
 		public int hp, ht, exp, lvl;
 		public boolean alive;
 		// public int keys, food, mobs, visibleEnemies;
@@ -405,8 +426,26 @@ public class DesktopLauncher {
 			s.exp = 0;          // 保底
 			System.err.println("[capture] " + ex);
 		}
-
+        Object levelObj = dungeon.getField("level").get(null);
+        s.explored = countExplored(levelObj);
 		return s;
+	}
+
+	// 放在 DesktopLauncher 類內任意位置（例如 main 最前面或最下方）：
+	private static int countExplored(Object level) {
+		try {
+			java.lang.reflect.Field f = level.getClass().getField("visited"); // boolean[]
+			boolean[] v = (boolean[]) f.get(level);
+			int c = 0; for (boolean b : v) if (b) c++;
+			return c;
+		} catch (Exception ignored) {}
+		try {
+			java.lang.reflect.Field f = level.getClass().getField("mapped"); // boolean[]
+			boolean[] v = (boolean[]) f.get(level);
+			int c = 0; for (boolean b : v) if (b) c++;
+			return c;
+		} catch (Exception ignored) {}
+		return -1; // 取不到就返回 -1
 	}
 
 

@@ -41,10 +41,14 @@ class SPDEnv(gym.Env):
         jar_path: str,
         capture_region: Tuple[int, int, int, int],
         grid_size: Tuple[int, int] = (32, 64),
-        frame_skip: int = 4,
+        frame_skip: int = 1,
         frame_stack: int = 4,
+        tick: float = 0.004,
         grayscale_size: Tuple[int, int] = (84, 84),
         highlight_duration: int = 5,          # ← 新增：邊框維持的影格數
+        forbidden_rects_norm=None, 
+        remap_forbidden=True,
+        extra_java_args: Optional[List[str]] = None,
     ) -> None:
         """
         Initialize the environment.
@@ -66,6 +70,7 @@ class SPDEnv(gym.Env):
         self.grid_size = grid_size
         self.frame_skip = frame_skip
         self.frame_stack = frame_stack
+        self.tick = tick
         self.grayscale_size = grayscale_size
         self.highlight_duration = highlight_duration
         self._highlight_counter: int = 0      # 還要畫幾張影格
@@ -74,7 +79,16 @@ class SPDEnv(gym.Env):
         self.prev_exp  = 0
         self.prev_gold = 0
         self.prev_depth = 1
-
+        self.prev_explored = 0
+        self.prev_alive = True
+        
+        self.forbidden_rects_norm = forbidden_rects_norm or []  # [(x1,y1,x2,y2)] in [0,1]
+        self.remap_forbidden = remap_forbidden
+        self._forbidden_actions = set()
+        self._nearest_safe = {}   # a -> safe_a
+        self._build_deadzone()    # ← 初始化後計算一次
+        self.extra_java_args = extra_java_args or []
+        
         # Discrete actions correspond to clicking on a tile in the grid.
         self.action_space = spaces.Discrete(grid_size[0] * grid_size[1])
         # Observation is a stack of grayscale frames.
@@ -92,7 +106,35 @@ class SPDEnv(gym.Env):
         if mss is None or cv2 is None:
             raise ImportError("Both 'mss' and 'opencv-python' must be installed to use SPDEnv.")
         self.sct = mss.mss()
+        
+    def _build_deadzone(self):
+        """把右上角禁點區轉成 action 索引集合，並建立最近安全格對應。"""
+        H, W = self.grid_size  # row, col
+        self._forbidden_actions.clear()
+        centers = []  # 每個 action 的像素中心（視窗座標，不含 capture_region 偏移）
 
+        # 每格中心在「視窗座標」的 x,y（我們傳給 Java 的就是視窗座標）
+        for r in range(H):
+            for c in range(W):
+                # 以 0~1 正規化座標來判斷是否落在禁區
+                xn = (c + 0.5) / W
+                yn = (r + 0.5) / H
+                action = r * W + c
+                for (x1, y1, x2, y2) in self.forbidden_rects_norm:
+                    if x1 <= xn <= x2 and y1 <= yn <= y2:
+                        self._forbidden_actions.add(action)
+                        break
+                centers.append((c, r))  # grid 空間座標，後面算最近安全格用
+
+        # 建立最近安全格映射
+        safe_actions = [a for a in range(H*W) if a not in self._forbidden_actions]
+        for a in range(H*W):
+            if a in self._forbidden_actions:
+                # 找最近的安全格（用格子距離）
+                ac, ar = centers[a]
+                best = min(safe_actions, key=lambda b: (centers[b][0]-ac)**2 + (centers[b][1]-ar)**2)
+                self._nearest_safe[a] = best
+            
     def _start_proc(self) -> None:
         """Start the SPD desktop jar in --ai-mode and keep stdin alive."""
         if self.proc is not None:
@@ -107,6 +149,7 @@ class SPDEnv(gym.Env):
             "-jar", str(jar_path),
             "--ai-mode"
         ]
+        cmd.extend(self.extra_java_args)
         
         self.proc = subprocess.Popen(
             cmd,
@@ -127,9 +170,21 @@ class SPDEnv(gym.Env):
             )
 
     def _send_click(self, row:int, col:int):
-        l, t, w, h = self.capture_region
+        # 若這格是禁點，就依設定改送最近安全格 or 直接忽略
+        a = row * self.grid_size[1] + col
+        if a in self._forbidden_actions:
+            if self.remap_forbidden:
+                a = self._nearest_safe[a]
+                row, col = divmod(a, self.grid_size[1])
+            else:
+                # 直接不送點擊
+                return
+        # 把 row/col 轉成「視窗座標」像素點（不加 capture_region 偏移）
+        _, _, w, h = self.capture_region
         tx, ty = w / self.grid_size[1], h / self.grid_size[0]
-        self._send({"x": int((col+0.5)*tx), "y": int((row+0.5)*ty), "button": 0})
+        x = int((col + 0.5) * tx)
+        y = int((row + 0.5) * ty)
+        self._send({"x": x, "y": y, "button": 0})
 
     def _ensure_proc(self) -> None:
         """Start the subprocess if it's not already running."""
@@ -157,7 +212,14 @@ class SPDEnv(gym.Env):
             # 使用白色單像素邊框
             cv2.rectangle(resized, (x1, y1), (x2, y2), color=255, thickness=1)
             self._highlight_counter -= 1
-
+            
+        if self.forbidden_rects_norm:
+            Hn, Wn = self.grayscale_size  # 84x84 之類
+            for (x1,y1,x2,y2) in self.forbidden_rects_norm:
+                x1p, y1p = int(x1 * Wn), int(y1 * Hn)
+                x2p, y2p = int(x2 * Wn), int(y2 * Hn)
+                cv2.rectangle(resized, (x1p, y1p), (x2p, y2p), color=200, thickness=1)
+                
         return resized
 
     def _send(self, obj: dict):
@@ -195,56 +257,90 @@ class SPDEnv(gym.Env):
         self.prev_exp  = 0
         self.prev_gold = 0
         self.prev_depth = 1
+        self.prev_explored = 0
+        self.prev_alive = True
+
         first_frame = first = self._grab_gray()
         for _ in range(self.frame_stack):
             self._frames.append(first_frame)
         return self._obs(), {}
 
-    def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
-        """Send a mouse click action, wait, capture frames, and return observation and reward."""
-        # Compute tile coordinates from action index
+    def step(self, action: int):
         r, c = divmod(action, self.grid_size[1])
         self._send_click(r, c)
-        # print(f"[Click]: ({row}, {col})")
-        # Skip a few frames to allow the game to update
+
         for _ in range(self.frame_skip):
-            time.sleep(0.05)
+            time.sleep(self.tick)
             self._frames.append(self._grab_gray())
             if len(self._frames) > self.frame_stack:
                 self._frames.pop(0)
 
-        # TODO: Implement proper reward and termination detection by parsing game output or using OCR.
         state = self._query_state()
         if not state:
             return self._obs(), 0.0, False, False, {}
         
-        # experience gain
+        alive = state.get("alive", True)
+        death_this_step = (self.prev_alive and not alive)  # 這一回合剛死
+        
+        # ---- 拆解外部獎勵 ----
         xp_now  = state["lvl"]*100 + state["exp"]
         xp_prev = self.prev_lvl*100 + self.prev_exp
-        reward  = xp_now - xp_prev
+        xp_delta = xp_now - xp_prev
 
-        # gold & depth bonus
-        reward += 0.1*(state["gold"] - self.prev_gold)
-        if state["depth"] > self.prev_depth:
-            reward += 50
+        gold_delta = state["gold"] - self.prev_gold
+        depth_up = state["depth"] > self.prev_depth
 
-        # death penalty
-        alive = state.get("alive", True)
-        if not alive:
-            reward -= 100
+        explored = state.get("explored", -1)
+        if explored >= 0 and state["depth"] != self.prev_depth:
+            # 跨樓層重新基準，避免上一層殘值造成突刺
+            self.prev_explored = 0
 
+        # 只在「還活著而且不是剛死的這一步」才計入探索獎勵
+        explored_delta_raw = max(0, explored - self.prev_explored) if (explored >= 0) else 0
+        if (not alive) or death_this_step:
+            explored_delta = 0
+        else:
+            # 加步進上限，避免一次爆量
+            explored_delta = explored_delta_raw #min(explored_delta_raw, 8)   # 每步最多 8 格，可自行調整
+
+        # 死亡懲罰（只在死亡那一回合給，之後就 done 了）
+        death_pen = 100 if death_this_step else 0
+
+        # 這裡是「外部」獎勵（intrinsic 另算）
+        ext_reward = (
+            xp_delta
+            + 0.1 * gold_delta
+            + (50 if depth_up else 0)
+            + 0.3 * explored_delta
+            - death_pen
+        )
+
+        info = {
+            "ext_reward": float(ext_reward),
+            "ext_breakdown": {
+                "xp":        int(xp_delta),
+                "gold":      int(gold_delta),
+                "explored":  int(explored_delta),      # 注意：這裡是「clamp 後」的值
+                "depth_up":  bool(depth_up),
+                "dead":      bool(death_this_step),
+            }
+        }
+        
         terminated = not alive
         truncated = False
-
-        # update baselines
+        
+        # 更新 baseline
         self.prev_lvl   = state["lvl"]
         self.prev_exp   = state["exp"]
         self.prev_gold  = state["gold"]
         self.prev_depth = state["depth"]
+        self.prev_alive = alive
+        if explored >= 0:
+            self.prev_explored = explored
 
-        info: Dict[str, Any] = {}
 
-        return self._obs(), reward, terminated, truncated, info
+        return self._obs(), float(ext_reward), terminated, truncated, info
+
 
     def render(self, mode: str = "human") -> None:
         if mode != "human":
